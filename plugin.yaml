@@ -1,0 +1,63 @@
+name: buzz-nostr
+label: Buzz
+kind: platform
+version: 0.1.0
+description: >
+  Bridges Hermes into a Buzz relay channel over Nostr. Mention-triggered
+  (@agent) and slash-command aware: the agent responds when its pubkey is
+  #p-tagged in a kind:9 stream message or when a message starts with "/".
+  Auto-discovers all channels when BUZZ_CHANNELS=*. Shells out to buzz-cli
+  (JSON in / JSON out) for all relay I/O, so no Nostr library is required.
+author: Ryan Workman
+
+requires_env:
+  - name: BUZZ_RELAY_URL
+    description: "Buzz relay base URL (http:// or https://, NOT ws://)"
+    prompt: "Relay URL"
+    password: false
+  - name: BUZZ_PRIVATE_KEY
+    description: "The agent's Nostr private key (nsec1... or 64-char hex)"
+    prompt: "Agent nsec"
+    password: true
+  - name: BUZZ_AGENT_PUBKEY
+    description: "The agent's own pubkey, 64-char hex. Used for self-filtering and mention detection."
+    prompt: "Agent pubkey (hex)"
+    password: false
+  - name: BUZZ_CHANNELS
+    description: "Comma-separated Buzz channel UUIDs to watch, or '*' to auto-discover all channels the agent is a member of"
+    prompt: "Channel UUID(s) or *"
+    password: false
+
+optional_env:
+  - name: BUZZ_CLI_PATH
+    description: "Path to the buzz binary (default: 'buzz' on PATH)"
+    prompt: "buzz-cli path"
+    password: false
+  - name: BUZZ_POLL_INTERVAL
+    description: "Seconds between relay polls (default: 5)"
+    prompt: "Poll interval seconds"
+    password: false
+  - name: BUZZ_BACKFILL_COUNT
+    description: "Recent messages to include as context on each mention (default: 12)"
+    prompt: "Backfill count"
+    password: false
+  - name: BUZZ_HOME_CHANNEL
+    description: "Default channel UUID for cron job delivery"
+    prompt: "Home channel UUID"
+    password: false
+  - name: BUZZ_ALLOWED_USERS
+    description: "Comma-separated pubkeys allowed to invoke the agent (empty = all members)"
+    prompt: "Allowed users"
+    password: false
+  - name: BUZZ_ALLOW_ALL_USERS
+    description: "Set to 'true' to let any channel member invoke the agent"
+    prompt: "Allow all users"
+    password: false
+  - name: BUZZ_AUTH_TAG
+    description: "NIP-OA attestation, required for 'buzz mem' engram tools"
+    prompt: "Auth tag"
+    password: true
+  - name: BUZZ_OWNER_PUBKEY
+    description: "Owner pubkey (hex) for engram encryption, if BUZZ_AUTH_TAG is not set"
+    prompt: "Owner pubkey"
+    password: false
