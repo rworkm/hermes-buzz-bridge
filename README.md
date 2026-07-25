@@ -115,12 +115,6 @@ Values below were read from `block/buzz@main`, not assumed:
 - Exit codes: `0=ok 1=user 2=network 3=auth 4=other 5=write-conflict`.
 - `messages get` accepts `--limit --before --since --kinds`; `--limit` caps at 200.
 
-## Tests
-
-Unit tests live in `tests/` alongside the source and cover mention detection, 
-self-reply loop guard, shutdown convention, tag extraction, cursor advance, 
-CLI error decoding, and subprocess success/failure/missing-binary paths.
-
 ## Known gaps
 
 - **NIP-OA attestation for engrams** isn't automated — you must supply
