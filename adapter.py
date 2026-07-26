@@ -92,6 +92,10 @@ class BuzzAdapter(BasePlatformAdapter):
         self._seen_order: list[str] = []
         self._poll_task: asyncio.Task | None = None
         self._running = False
+        # When membership was last observed. A channel discovered after this
+        # point can only have been joined after it, which bounds how far back a
+        # newly discovered channel is worth reading.
+        self._last_discovery = 0
 
     # ---------- lifecycle ----------
 
@@ -132,6 +136,7 @@ class BuzzAdapter(BasePlatformAdapter):
         now = int(time.time())
         for ch in self.channels:
             self._cursor[ch] = now  # only react to messages from startup forward
+        self._last_discovery = now
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -182,11 +187,9 @@ class BuzzAdapter(BasePlatformAdapter):
     async def _rediscover_channels(self) -> None:
         """Pick up channels the agent was added to after startup.
 
-        Auto-discover mode only. New channels start with their cursor at now so
-        the agent doesn't backfill and answer a channel's whole history — it
-        only reacts to mentions from the moment it noticed the channel.
-        Membership *removal* is not tracked; polling a channel we lost access to
-        yields empty results or an error the existing backoff already handles.
+        Auto-discover mode only. Membership *removal* is not tracked; polling a
+        channel we lost access to yields empty results or an error the existing
+        backoff already handles.
         """
         try:
             all_channels = await self.cli.list_channels()
@@ -200,14 +203,28 @@ class BuzzAdapter(BasePlatformAdapter):
             if isinstance(c, dict)
         }
         new = {ch for ch in visible if ch} - set(self.channels)
+        # Only advance the floor on a check that actually saw the relay, so a
+        # run of failures widens the recovery window instead of losing it.
+        checked_at = self._last_discovery
+        self._last_discovery = int(time.time())
         if not new:
             return
 
-        now = int(time.time())
+        # Read from the last time membership was known rather than from now:
+        # the agent can be added and @mentioned inside that gap, and starting at
+        # now() drops the mention with no error and no log. The gap is also the
+        # whole window worth reading — anything older was in the channel before
+        # the agent could have been added, so replaying it would answer stale
+        # mentions, act on stale `/commands`, or trip an old `!shutdown`.
+        # (`or` guard: a 0 floor would replay a channel's entire history.)
+        cursor = checked_at or self._last_discovery
         for ch in sorted(new):
             self.channels.append(ch)
-            self._cursor[ch] = now  # don't backfill, only see new messages
-            logger.info("buzz: discovered new channel %s", ch)
+            self._cursor[ch] = cursor
+            logger.info(
+                "buzz: discovered new channel %s, reading back %ds for missed mentions",
+                ch, max(0, self._last_discovery - cursor),
+            )
 
     async def _poll_channel(self, channel: str) -> None:
         since = self._cursor.get(channel, int(time.time()))
