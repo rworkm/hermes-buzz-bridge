@@ -44,6 +44,9 @@ DEFAULT_BACKFILL = 12
 MAX_MESSAGE_LENGTH = 8000
 # Bound the dedup set so a long-lived gateway doesn't grow without limit.
 SEEN_CAP = 2000
+# How often to re-check channel membership when BUZZ_CHANNELS='*'. Creating a
+# channel is rare, so this is deliberately much slower than the poll interval.
+REDISCOVER_INTERVAL = 60.0
 
 
 def _int_env(name: str, default: int) -> int:
@@ -153,8 +156,14 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def _poll_loop(self) -> None:
         backoff = self.poll_interval
+        # connect() has just discovered channels, so start at 1 — the first
+        # re-discovery lands one REDISCOVER_INTERVAL in, not immediately.
+        cycle = 1
+        rediscover_every = max(1, int(REDISCOVER_INTERVAL / max(self.poll_interval, 0.1)))
         while self._running:
             try:
+                if self._auto_channels and cycle % rediscover_every == 0:
+                    await self._rediscover_channels()
                 for channel in self.channels:
                     await self._poll_channel(channel)
                 backoff = self.poll_interval  # reset after a clean pass
@@ -167,7 +176,38 @@ class BuzzAdapter(BasePlatformAdapter):
             except Exception:
                 logger.exception("buzz: unexpected poll error")
                 backoff = min(backoff * 2, 60.0)
+            cycle += 1
             await asyncio.sleep(backoff)
+
+    async def _rediscover_channels(self) -> None:
+        """Pick up channels the agent was added to after startup.
+
+        Auto-discover mode only. New channels start with their cursor at now so
+        the agent doesn't backfill and answer a channel's whole history — it
+        only reacts to mentions from the moment it noticed the channel.
+        Membership *removal* is not tracked; polling a channel we lost access to
+        yields empty results or an error the existing backoff already handles.
+        """
+        try:
+            all_channels = await self.cli.list_channels()
+        except BuzzCliError as exc:
+            logger.debug("buzz: channel re-discovery failed (%s), will retry", exc)
+            return  # transient, try again next cycle
+
+        visible = {
+            str(c.get("channel_id") or c.get("id") or "").strip()
+            for c in all_channels
+            if isinstance(c, dict)
+        }
+        new = {ch for ch in visible if ch} - set(self.channels)
+        if not new:
+            return
+
+        now = int(time.time())
+        for ch in sorted(new):
+            self.channels.append(ch)
+            self._cursor[ch] = now  # don't backfill, only see new messages
+            logger.info("buzz: discovered new channel %s", ch)
 
     async def _poll_channel(self, channel: str) -> None:
         since = self._cursor.get(channel, int(time.time()))
