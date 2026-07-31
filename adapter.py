@@ -44,6 +44,9 @@ DEFAULT_BACKFILL = 12
 MAX_MESSAGE_LENGTH = 8000
 # Bound the dedup set so a long-lived gateway doesn't grow without limit.
 SEEN_CAP = 2000
+# How often to re-check channel membership when BUZZ_CHANNELS='*'. Creating a
+# channel is rare, so this is deliberately much slower than the poll interval.
+REDISCOVER_INTERVAL = 60.0
 
 
 def _int_env(name: str, default: int) -> int:
@@ -89,6 +92,10 @@ class BuzzAdapter(BasePlatformAdapter):
         self._seen_order: list[str] = []
         self._poll_task: asyncio.Task | None = None
         self._running = False
+        # When membership was last observed. A channel discovered after this
+        # point can only have been joined after it, which bounds how far back a
+        # newly discovered channel is worth reading.
+        self._last_discovery = 0
 
     # ---------- lifecycle ----------
 
@@ -129,6 +136,7 @@ class BuzzAdapter(BasePlatformAdapter):
         now = int(time.time())
         for ch in self.channels:
             self._cursor[ch] = now  # only react to messages from startup forward
+        self._last_discovery = now
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -153,8 +161,14 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def _poll_loop(self) -> None:
         backoff = self.poll_interval
+        # connect() has just discovered channels, so start at 1 — the first
+        # re-discovery lands one REDISCOVER_INTERVAL in, not immediately.
+        cycle = 1
+        rediscover_every = max(1, int(REDISCOVER_INTERVAL / max(self.poll_interval, 0.1)))
         while self._running:
             try:
+                if self._auto_channels and cycle % rediscover_every == 0:
+                    await self._rediscover_channels()
                 for channel in self.channels:
                     await self._poll_channel(channel)
                 backoff = self.poll_interval  # reset after a clean pass
@@ -167,7 +181,50 @@ class BuzzAdapter(BasePlatformAdapter):
             except Exception:
                 logger.exception("buzz: unexpected poll error")
                 backoff = min(backoff * 2, 60.0)
+            cycle += 1
             await asyncio.sleep(backoff)
+
+    async def _rediscover_channels(self) -> None:
+        """Pick up channels the agent was added to after startup.
+
+        Auto-discover mode only. Membership *removal* is not tracked; polling a
+        channel we lost access to yields empty results or an error the existing
+        backoff already handles.
+        """
+        try:
+            all_channels = await self.cli.list_channels()
+        except BuzzCliError as exc:
+            logger.debug("buzz: channel re-discovery failed (%s), will retry", exc)
+            return  # transient, try again next cycle
+
+        visible = {
+            str(c.get("channel_id") or c.get("id") or "").strip()
+            for c in all_channels
+            if isinstance(c, dict)
+        }
+        new = {ch for ch in visible if ch} - set(self.channels)
+        # Only advance the floor on a check that actually saw the relay, so a
+        # run of failures widens the recovery window instead of losing it.
+        checked_at = self._last_discovery
+        self._last_discovery = int(time.time())
+        if not new:
+            return
+
+        # Read from the last time membership was known rather than from now:
+        # the agent can be added and @mentioned inside that gap, and starting at
+        # now() drops the mention with no error and no log. The gap is also the
+        # whole window worth reading — anything older was in the channel before
+        # the agent could have been added, so replaying it would answer stale
+        # mentions, act on stale `/commands`, or trip an old `!shutdown`.
+        # (`or` guard: a 0 floor would replay a channel's entire history.)
+        cursor = checked_at or self._last_discovery
+        for ch in sorted(new):
+            self.channels.append(ch)
+            self._cursor[ch] = cursor
+            logger.info(
+                "buzz: discovered new channel %s, reading back %ds for missed mentions",
+                ch, max(0, self._last_discovery - cursor),
+            )
 
     async def _poll_channel(self, channel: str) -> None:
         since = self._cursor.get(channel, int(time.time()))

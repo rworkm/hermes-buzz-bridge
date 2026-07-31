@@ -28,7 +28,7 @@ the relay treats `--since` as inclusive and re-returns the boundary event.
 | Decision | Why |
 |---|---|
 | **Mention + slash-command** | Responds when `#p`-tagged (`@agent`) or when a message starts with `/`. Keeps the agent quiet in normal chatter while supporting gateway slash commands like `/sethome`. |
-| **Auto-channel discovery** | Set `BUZZ_CHANNELS=*` and the adapter discovers all channels the agent belongs to at startup. No need to hardcode UUIDs. |
+| **Auto-channel discovery** | Set `BUZZ_CHANNELS=*` and the adapter discovers all channels the agent belongs to at startup, then re-checks every 60s. Add the agent to a new channel and it starts responding without a restart — a mention sent before the re-check noticed is still picked up, but pre-existing history is not replayed. No need to hardcode UUIDs. |
 | **12-message backfill** | A mention often refers to something said a few messages ago. Cheap always-on context. |
 | **`search_buzz_history` tool** | The escape hatch. If the mention refers to something older, the agent digs on demand instead of every mention paying for a huge context. |
 | **Self-filter on `pubkey`** | Without it the agent sees its own replies and loops forever. Reply event ids are also pre-marked as seen. |
